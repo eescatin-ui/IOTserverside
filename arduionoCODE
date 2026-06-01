@@ -1,0 +1,448 @@
+// ==========================================
+//  COMPLETE IoT SYSTEM - DUAL LED VERSION
+//  WITH BUZZER DURATION CONTROL (2s, 4s, 6s)
+//  OPTIMIZED: Reduced server load for slow servers
+//  Yellow LED (D12): ON when LIGHT
+//  Red LED (D14): ON when DARK
+//  Buzzer: configurable 2s/4s/6s when MOTION
+// ==========================================
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+// WiFi Configuration
+const char* ssid = "PLDTHOMEFIBRABy6E";
+const char* password = "HhEeLlEeNn_1986!";
+const char* serverUrl = "http://192.168.1.250:8000/api";
+
+// Pin Definitions
+#define LDR_PIN 25          // LDR sensor
+#define YELLOW_LED_PIN 12   // Yellow LED - glows when LIGHT
+#define RED_LED_PIN 14      // Red LED - glows when DARK
+#define MOTION_PIN 33       // Motion sensor
+#define BUZZER_PIN 32       // Buzzer
+
+// Timing Variables - INCREASED INTERVALS for slow server
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 5000;  // Send every 5 seconds (was 3s)
+
+unsigned long lastPollTime = 0;
+const unsigned long pollInterval = 10000;  // Poll every 10 seconds (was 5s)
+
+// Actuator enable states (from mobile app)
+bool yellowLedEnabled = true;
+bool redLedEnabled = true;
+bool buzzerEnabled = true;
+
+// Buzzer duration control (1=2s, 2=4s, 3=6s)
+int buzzerDurationSeconds = 2;  // Default: 2 (4 seconds)
+unsigned long buzzerDuration = 4000;  // milliseconds
+
+// Buzzer timing
+bool buzzerActive = false;
+unsigned long buzzerStartTime = 0;
+
+// Motion hold count - keeps motion TRUE for multiple sends
+int motionHoldCount = 0;
+const int motionHoldCountMax = 8;  // Hold motion for ~4 send cycles (20 seconds)
+
+// Track motion detection
+bool motionDetected = false;
+unsigned long motionDetectedTime = 0;
+
+// Connection status tracking
+bool lastConnectionState = false;
+unsigned long connectionCheckTime = 0;
+
+// Track last successful requests
+unsigned long lastSuccessfulSensorSend = 0;
+unsigned long lastSuccessfulPoll = 0;
+bool sensorSendFailed = false;
+bool pollFailed = false;
+
+// ==========================================
+//  SETUP
+// ==========================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  pinMode(LDR_PIN, INPUT);
+  pinMode(MOTION_PIN, INPUT);
+  pinMode(YELLOW_LED_PIN, OUTPUT);
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  
+  // Initialize all outputs OFF
+  digitalWrite(YELLOW_LED_PIN, LOW);
+  digitalWrite(RED_LED_PIN, LOW);
+  noTone(BUZZER_PIN);
+  
+  Serial.println("=========================================");
+  Serial.println("ESP32 IoT SYSTEM - DUAL LED VERSION");
+  Serial.println("OPTIMIZED FOR SLOW SERVER");
+  Serial.println("=========================================");
+  Serial.println("Yellow LED (D12): ON when LIGHT");
+  Serial.println("Red LED (D14): ON when DARK");
+  Serial.println("Buzzer Duration: 2s, 4s, or 6s");
+  Serial.println("Send Interval: 5 seconds (reduced load)");
+  Serial.println("Poll Interval: 10 seconds (reduced load)");
+  Serial.println("HTTP Timeout: 5 seconds");
+  Serial.println("=========================================");
+  
+  connectToWiFi();
+  
+  // Initial state fetch with delay between requests
+  pollActuatorStates();
+  delay(1000);  // Wait 1 second between requests
+  pollBuzzerDuration();
+  
+  Serial.println("\n⏳ Waiting 5 seconds for motion sensor...");
+  for (int i = 0; i < 5; i++) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\n✅ Ready!");
+  Serial.println("=========================================\n");
+}
+
+void connectToWiFi() {
+  WiFi.begin(ssid, password);
+  int attempts = 0;
+  Serial.print("Connecting to WiFi");
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(1000);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n❌ WiFi Connection Failed!");
+  }
+}
+
+// ==========================================
+//  UPDATE BUZZER DURATION
+// ==========================================
+
+void updateBuzzerDuration() {
+  switch(buzzerDurationSeconds) {
+    case 1:
+      buzzerDuration = 2000;
+      Serial.println("🔊 Buzzer: 2 SECONDS");
+      break;
+    case 2:
+      buzzerDuration = 4000;
+      Serial.println("🔊 Buzzer: 4 SECONDS");
+      break;
+    case 3:
+      buzzerDuration = 6000;
+      Serial.println("🔊 Buzzer: 6 SECONDS");
+      break;
+    default:
+      buzzerDuration = 4000;
+      buzzerDurationSeconds = 2;
+      Serial.println("🔊 Buzzer: DEFAULT 4 SECONDS");
+  }
+}
+
+// ==========================================
+//  CHECK WIFI CONNECTION
+// ==========================================
+
+void checkConnection() {
+  if (millis() - connectionCheckTime >= 15000) {  // Check every 15 seconds
+    connectionCheckTime = millis();
+    bool currentState = (WiFi.status() == WL_CONNECTED);
+    
+    if (currentState != lastConnectionState) {
+      lastConnectionState = currentState;
+      if (currentState) {
+        Serial.println("✅ WiFi Reconnected!");
+        pollActuatorStates();
+        delay(1000);
+        pollBuzzerDuration();
+      } else {
+        Serial.println("❌ WiFi Disconnected!");
+      }
+    }
+  }
+}
+
+// ==========================================
+//  POLL ACTUATOR ENABLE STATES
+// ==========================================
+
+void pollActuatorStates() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  // Skip if last poll failed and it's been less than 30 seconds
+  if (pollFailed && (millis() - lastSuccessfulPoll < 30000)) {
+    return;
+  }
+  
+  HTTPClient http;
+  http.begin(serverUrl + String("/actuators/status"));
+  http.setTimeout(5000);  // 5 second timeout
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    StaticJsonDocument<192> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    
+    if (!error) {
+      bool newYellowLedEnabled = doc["yellow_led"] == 1;
+      bool newRedLedEnabled = doc["red_led"] == 1;
+      bool newBuzzerEnabled = doc["buzzer"] == 1;
+      
+      if (newYellowLedEnabled != yellowLedEnabled) {
+        yellowLedEnabled = newYellowLedEnabled;
+        Serial.printf("📱 Amber LED: %s\n", yellowLedEnabled ? "ON" : "OFF");
+        if (!yellowLedEnabled) digitalWrite(YELLOW_LED_PIN, LOW);
+      }
+      
+      if (newRedLedEnabled != redLedEnabled) {
+        redLedEnabled = newRedLedEnabled;
+        Serial.printf("📱 Crimson LED: %s\n", redLedEnabled ? "ON" : "OFF");
+        if (!redLedEnabled) digitalWrite(RED_LED_PIN, LOW);
+      }
+      
+      if (newBuzzerEnabled != buzzerEnabled) {
+        buzzerEnabled = newBuzzerEnabled;
+        Serial.printf("📱 Buzzer: %s\n", buzzerEnabled ? "ON" : "OFF");
+        if (!buzzerEnabled) {
+          noTone(BUZZER_PIN);
+          buzzerActive = false;
+        }
+      }
+      
+      lastSuccessfulPoll = millis();
+      pollFailed = false;
+    }
+  } else {
+    pollFailed = true;
+    Serial.printf("⚠️ Actuator poll failed: HTTP %d\n", httpCode);
+  }
+  http.end();
+}
+
+// ==========================================
+//  POLL BUZZER DURATION
+// ==========================================
+
+void pollBuzzerDuration() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  // Skip if last poll failed and it's been less than 30 seconds
+  if (pollFailed && (millis() - lastSuccessfulPoll < 30000)) {
+    return;
+  }
+  
+  HTTPClient http;
+  bool success = false;
+  String payload = "";
+  
+  // Try primary endpoint
+  http.begin(serverUrl + String("/esp32/duration"));
+  http.setTimeout(5000);
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    payload = http.getString();
+    success = true;
+  } else {
+    http.end();
+    // Try fallback
+    http.begin(serverUrl + String("/actuators/duration"));
+    http.setTimeout(5000);
+    httpCode = http.GET();
+    
+    if (httpCode == HTTP_CODE_OK) {
+      payload = http.getString();
+      success = true;
+    }
+  }
+  
+  if (success) {
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    
+    if (!error) {
+      int newDuration = doc["duration"] | doc["state"] | doc["value"] | -1;
+      
+      if (newDuration >= 1 && newDuration <= 3) {
+        if (newDuration != buzzerDurationSeconds) {
+          buzzerDurationSeconds = newDuration;
+          updateBuzzerDuration();
+        }
+      }
+    }
+  }
+  http.end();
+}
+
+// ==========================================
+//  SEND SENSOR DATA
+// ==========================================
+
+void sendSensorData() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  int lightRaw = digitalRead(LDR_PIN);
+  int motionRaw = digitalRead(MOTION_PIN);
+
+  // Set motion hold when motion is detected
+  if (motionRaw == HIGH) {
+    motionHoldCount = motionHoldCountMax;
+    if (!motionDetected) {
+      motionDetected = true;
+      motionDetectedTime = millis();
+      Serial.println("🔴 Motion detected!");
+    }
+  }
+
+  // Keep motion alive while buzzer is active
+  if (buzzerActive) {
+    motionHoldCount = max(motionHoldCount, 2);
+  }
+
+  // Use motion hold
+  int motionValue = 0;
+  if (motionHoldCount > 0) {
+    motionValue = 1;
+    motionHoldCount--;
+  } else {
+    if (motionDetected) {
+      motionDetected = false;
+    }
+  }
+  
+  int lightValue = (lightRaw == LOW) ? 1 : 0;
+  
+  Serial.println("─────────────────────────────────────────");
+  Serial.printf("📊 Light: %d | Motion: %d (hold:%d)\n", lightValue, motionValue, motionHoldCount);
+  Serial.printf("📊 Buzzer: %s | Duration: %ds\n", 
+                buzzerActive ? "ON 🔊" : "OFF 🔇", 
+                buzzerDurationSeconds);
+  Serial.println("─────────────────────────────────────────");
+  
+  StaticJsonDocument<128> jsonDoc;
+  jsonDoc["light"] = lightValue;
+  jsonDoc["motion"] = motionValue;
+  
+  String jsonString;
+  serializeJson(jsonDoc, jsonString);
+  
+  HTTPClient http;
+  http.begin(serverUrl + String("/sensors/data"));
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(5000);  // 5 second timeout
+  
+  int httpCode = http.POST(jsonString);
+  
+  if (httpCode == HTTP_CODE_CREATED || httpCode == HTTP_CODE_OK) {
+    Serial.println("✅ Data saved!");
+    sensorSendFailed = false;
+    lastSuccessfulSensorSend = millis();
+  } else {
+    sensorSendFailed = true;
+    Serial.printf("❌ HTTP Error: %d\n", httpCode);
+  }
+  
+  http.end();
+}
+
+// ==========================================
+//  CONTROL HARDWARE
+// ==========================================
+
+void controlHardware() {
+  int lightRaw = digitalRead(LDR_PIN);
+  int motionRaw = digitalRead(MOTION_PIN);
+  
+  bool isLight = (lightRaw == LOW);
+  bool isDark = (lightRaw == HIGH);
+  
+  // Yellow LED (D12): ON when LIGHT
+  if (yellowLedEnabled) {
+    digitalWrite(YELLOW_LED_PIN, isLight ? HIGH : LOW);
+  } else {
+    digitalWrite(YELLOW_LED_PIN, LOW);
+  }
+  
+  // Red LED (D14): ON when DARK
+  if (redLedEnabled) {
+    digitalWrite(RED_LED_PIN, isDark ? HIGH : LOW);
+  } else {
+    digitalWrite(RED_LED_PIN, LOW);
+  }
+  
+  // Buzzer (D32): ON when MOTION with retrigger
+  if (buzzerEnabled) {
+    bool isMotion = (motionRaw == HIGH);
+    
+    if (isMotion) {
+      if (!buzzerActive) {
+        buzzerActive = true;
+        buzzerStartTime = millis();
+        tone(BUZZER_PIN, 1000);
+        Serial.printf("🔴🔴🔴 MOTION! Buzzer ON (%ds) 🔴🔴🔴\n", buzzerDurationSeconds);
+      } else {
+        // Retrigger - reset timer
+        buzzerStartTime = millis();
+      }
+    }
+    
+    // Check if buzzer duration expired
+    if (buzzerActive && (millis() - buzzerStartTime >= buzzerDuration)) {
+      buzzerActive = false;
+      noTone(BUZZER_PIN);
+      Serial.println("✓ Buzzer OFF");
+    }
+  } else {
+    if (buzzerActive) {
+      noTone(BUZZER_PIN);
+      buzzerActive = false;
+    }
+  }
+}
+
+// ==========================================
+//  MAIN LOOP - OPTIMIZED FOR SLOW SERVERS
+// ==========================================
+
+void loop() {
+  // Check WiFi connection
+  checkConnection();
+  
+  // Control hardware EVERY loop (most responsive)
+  controlHardware();
+  
+  unsigned long currentTime = millis();
+  
+  // Send sensor data (every 5 seconds) - only if last send succeeded or enough time passed
+  if (currentTime - lastSendTime >= sendInterval) {
+    sendSensorData();
+    lastSendTime = currentTime;
+  }
+  
+  // Poll server (every 10 seconds) - with delay between requests
+  if (currentTime - lastPollTime >= pollInterval) {
+    pollActuatorStates();
+    delay(500);  // Wait 500ms between requests
+    pollBuzzerDuration();
+    lastPollTime = currentTime;
+  }
+  
+  delay(50);  // Small delay to prevent watchdog issues
+}
