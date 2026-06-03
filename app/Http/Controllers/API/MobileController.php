@@ -20,9 +20,9 @@ class MobileController extends Controller
         $actuators = ActuatorState::pluck('state', 'actuator_name');
         // Convert to boolean-compatible format
         $actuatorStatus = [
+            'green_led'  => (int) ($actuators['green_led']  ?? 0),
             'yellow_led' => (int) ($actuators['yellow_led'] ?? 0),
-            'red_led' => (int) ($actuators['red_led'] ?? 0),
-            'buzzer' => (int) ($actuators['buzzer'] ?? 0),
+            'buzzer'     => (int) ($actuators['buzzer']     ?? 0),
         ];
 
         // Connection status

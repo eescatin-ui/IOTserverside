@@ -1109,44 +1109,44 @@
 
                     <!-- LED Controls -->
                     <div class="controls-section">
-                        <div class="controls-label">Lighting Controls</div>
+                        <div class="controls-label">Lighting Controls · D12 Green / D14 Red</div>
 
-                        <!-- Amber Light (Yellow LED) -->
+                        <!-- Green Light (D12 - ON when LIGHT)  -> UI shown in YELLOW -->
                         <div class="control-row">
                             <div class="control-info">
                                 <div class="control-icon-box" style="background: rgba(251, 191, 36, 0.15);">
                                     <span class="led-indicator" style="background: var(--accent-amber); color: var(--accent-amber);"></span>
                                 </div>
                                 <div>
-                                    <div class="control-name">Amber Light</div>
+                                    <div class="control-name">Yellow Light</div>
                                     <div class="control-hint">
-                                        Day indicator · @{{ getActuatorState('yellow_led').state ? 'Active' : 'Off' }}
+                                        Light indicator (D12) · @{{ getActuatorState('green_led').state ? 'Active' : 'Off' }}
                                     </div>
                                 </div>
                             </div>
-                            <label class="toggle-switch" :class="{ loading: switching.yellow_led }">
-                                <input type="checkbox" :checked="getActuatorState('yellow_led').state"
-                                    @change="toggleActuator('yellow_led', $event.target.checked)">
+                            <label class="toggle-switch" :class="{ loading: switching.green_led }">
+                                <input type="checkbox" :checked="getActuatorState('green_led').state"
+                                    @change="toggleActuator('green_led', $event.target.checked)">
                                 <span class="toggle-track"></span>
                             </label>
                         </div>
 
-                        <!-- Crimson Light (Red LED) -->
+                        <!-- Yellow Light (D14 - ON when DARK) -> UI shown in RED -->
                         <div class="control-row">
                             <div class="control-info">
                                 <div class="control-icon-box" style="background: rgba(248, 113, 113, 0.15);">
                                     <span class="led-indicator" style="background: var(--accent-red); color: var(--accent-red);"></span>
                                 </div>
                                 <div>
-                                    <div class="control-name">Crimson Light</div>
+                                    <div class="control-name">Red Light</div>
                                     <div class="control-hint">
-                                        Night indicator · @{{ getActuatorState('red_led').state ? 'Active' : 'Off' }}
+                                        Dark indicator (D14) · @{{ getActuatorState('yellow_led').state ? 'Active' : 'Off' }}
                                     </div>
                                 </div>
                             </div>
-                            <label class="toggle-switch" :class="{ loading: switching.red_led }">
-                                <input type="checkbox" :checked="getActuatorState('red_led').state"
-                                    @change="toggleActuator('red_led', $event.target.checked)">
+                            <label class="toggle-switch" :class="{ loading: switching.yellow_led }">
+                                <input type="checkbox" :checked="getActuatorState('yellow_led').state"
+                                    @change="toggleActuator('yellow_led', $event.target.checked)">
                                 <span class="toggle-track"></span>
                             </label>
                         </div>
@@ -1246,7 +1246,7 @@ createApp({
             todayActivities: 0,
 
             activeTab: 'telemetry',
-            switching: { yellow_led: false, red_led: false, buzzer: false, buzzer_duration: false },
+            switching: { green_led: false, yellow_led: false, buzzer: false, buzzer_duration: false },
 
             inactivityTimer: null,
             showTimeoutWarning: false,
@@ -1501,7 +1501,7 @@ createApp({
         startPolling() {
             this.pollTimer = setInterval(() => {
                 if (this.token) this.loadDashboard(false);
-            }, 3000);
+            }, 2000);
         },
         stopPolling() {
             if (this.pollTimer) {

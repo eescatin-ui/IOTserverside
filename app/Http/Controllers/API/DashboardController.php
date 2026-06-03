@@ -190,7 +190,7 @@ class DashboardController extends Controller
         }
 
         $validated = $request->validate([
-            'actuator' => 'required|string|in:yellow_led,red_led,buzzer,buzzer_duration',
+            'actuator' => 'required|string|in:green_led,yellow_led,buzzer,buzzer_duration',
             'state' => 'required',
         ]);
 

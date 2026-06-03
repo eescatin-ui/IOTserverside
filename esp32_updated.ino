@@ -15,7 +15,7 @@
 // WiFi Configuration
 const char* ssid = "PLDTHOMEFIBRABy6E";
 const char* password = "HhEeLlEeNn_1986!";
-const char* serverUrl = "http://192.168.1.250:8000/api";
+const char* serverUrl = "http://192.168.1.32:8000/api";
 
 // Pin Definitions
 #define LDR_PIN 25          // LDR sensor
